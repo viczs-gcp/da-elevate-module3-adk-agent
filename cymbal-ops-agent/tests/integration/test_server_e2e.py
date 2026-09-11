@@ -36,6 +36,8 @@ from a2a.types import (
 )
 from requests.exceptions import RequestException
 
+from tests.integration.conftest import offline_mode
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -56,12 +58,24 @@ def log_output(pipe: Any, log_func: Any) -> None:
 
 
 def start_server() -> subprocess.Popen[str]:
-    """Start the FastAPI server using subprocess and log its output."""
+    """Start the FastAPI server using subprocess and log its output.
+
+    When offline mode is enabled (the default, ``MOCK_LLM`` truthy), the server is
+    booted through ``tests.integration.mock_server``, which installs the Gemini and
+    GCP interceptors *before* importing ``app.fast_api_app``. In-process
+    ``unittest.mock`` patches cannot reach a subprocess, so this indirection is what
+    lets the e2e suite run in CI/CD without live Vertex API keys or ADC.
+    """
+    asgi_target = (
+        "tests.integration.mock_server:app" if offline_mode() else "app.fast_api_app:app"
+    )
+    logger.info("Booting ASGI target %s", asgi_target)
+
     command = [
         sys.executable,
         "-m",
         "uvicorn",
-        "app.fast_api_app:app",
+        asgi_target,
         "--host",
         "0.0.0.0",
         "--port",
@@ -69,6 +83,13 @@ def start_server() -> subprocess.Popen[str]:
     ]
     env = os.environ.copy()
     env["INTEGRATION_TEST"] = "TRUE"
+    # Propagate the interceptor flag explicitly so the subprocess matches the
+    # parent session's mode even when MOCK_LLM was only implicitly defaulted.
+    env["MOCK_LLM"] = "TRUE" if offline_mode() else "FALSE"
+    # Ensure the repo root is importable for `tests.integration.mock_server`.
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (os.getcwd(), env.get("PYTHONPATH", "")) if p
+    )
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,

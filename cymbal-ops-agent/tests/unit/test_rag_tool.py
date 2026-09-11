@@ -15,7 +15,6 @@
 """Unit tests for pos_troubleshooting_rag_tool and helper functions."""
 
 from unittest.mock import MagicMock, patch
-import pytest
 
 from app.tools.rag_tool import (
     SIMILARITY_THRESHOLD,
@@ -29,9 +28,8 @@ from app.tools.rag_tool import (
 def test_uncertified_warning_fallback_exact_string() -> None:
     """Verifies that the RAG fallback matches the exact mandatory decline string."""
     expected = (
-        "[WARNING: Uncertified / Out-of-Scope Hardware Inquiry. Vector similarity "
-        "score fell below the safety threshold and no certified POS runbook matched "
-        "your query. Please consult authorized hardware vendor support.]"
+        "I cannot find certified warranty or repair rules for this specific error "
+        "in our technical repository."
     )
     assert UNCERTIFIED_WARNING_FALLBACK == expected
     assert SIMILARITY_THRESHOLD == 0.70

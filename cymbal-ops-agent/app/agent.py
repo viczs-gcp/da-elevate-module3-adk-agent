@@ -20,13 +20,14 @@ from google.adk.apps import App
 from google.adk.models import Gemini
 from google.genai import types
 
+from app import config
 from app.tools import (
     bigtable_mcp_toolset,
     cymbal_analytics_tool,
     pos_troubleshooting_rag_tool,
 )
 
-MODEL = "gemini-3.6-flash"
+MODEL = config.AGENT_MODEL
 
 SYSTEM_INSTRUCTION = """You are the Cymbal Retail Operations Coordinator Agent (`cymbal_operations_agent`).
 You orchestrate 3 specialized tool gateways to assist store leads, technicians, and loss-prevention auditors:

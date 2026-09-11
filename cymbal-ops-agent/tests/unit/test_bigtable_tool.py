@@ -14,20 +14,34 @@
 
 """Unit tests for Bigtable MCP toolset configuration and credentials."""
 
-import pytest
 from google.adk.tools import McpToolset
 
+from app import config
 from app.tools.bigtable_tool import (
+    BIGTABLE_MCP_AUDIENCE,
     BIGTABLE_MCP_URL,
+    SERVICE_ACCOUNT,
     bigtable_mcp_toolset,
     create_bigtable_mcp_toolset,
 )
 
 
-def test_bigtable_mcp_url_configured() -> None:
-    """Verifies that the Bigtable MCP URL is configured correctly."""
-    assert "mcp-toolbox-bigtable" in BIGTABLE_MCP_URL
+def test_bigtable_mcp_url_is_env_driven() -> None:
+    """The Cloud Run endpoint is resolved from the environment, never hardcoded."""
+    assert BIGTABLE_MCP_URL == config.BIGTABLE_MCP_URL
     assert not BIGTABLE_MCP_URL.endswith("/")
+    if BIGTABLE_MCP_URL:
+        assert BIGTABLE_MCP_URL.startswith("https://")
+
+
+def test_bigtable_mcp_audience_and_service_account_are_env_driven() -> None:
+    """OIDC audience and impersonated principal both come from configuration."""
+    assert BIGTABLE_MCP_AUDIENCE == (
+        config.BIGTABLE_MCP_AUDIENCE or config.BIGTABLE_MCP_URL
+    )
+    assert SERVICE_ACCOUNT == config.BIGTABLE_MCP_SERVICE_ACCOUNT
+    if SERVICE_ACCOUNT:
+        assert SERVICE_ACCOUNT.endswith(".iam.gserviceaccount.com")
 
 
 def test_bigtable_toolset_instance() -> None:
@@ -41,6 +55,12 @@ def test_create_bigtable_mcp_toolset_custom_url() -> None:
     toolset = create_bigtable_mcp_toolset(url=custom_url)
     assert isinstance(toolset, McpToolset)
     assert toolset._connection_params.url == f"{custom_url}/mcp"
+
+
+def test_create_bigtable_mcp_toolset_strips_trailing_slash() -> None:
+    """Trailing slashes never leak into the MCP endpoint path."""
+    toolset = create_bigtable_mcp_toolset(url="https://custom-mcp-service.a.run.app/")
+    assert toolset._connection_params.url == "https://custom-mcp-service.a.run.app/mcp"
 
 
 def test_row_key_format_standard() -> None:

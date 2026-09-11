@@ -5,29 +5,30 @@ and full-text search fallback over fine-grained POS runbook chunk embeddings in 
 """
 
 import logging
-import os
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
 
 from google.api_core.exceptions import GoogleAPICallError
 from google.cloud import bigquery
-from dotenv import load_dotenv
 
-load_dotenv()
+from app import config
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ID = os.getenv("PROJECT_ID", "vic-data-elevate")
-TABLE_NAME = f"`{PROJECT_ID}.cymbal_gold.pos_manual_chunk_embeddings`"
-BASELINE_TABLE_NAME = f"`{PROJECT_ID}.cymbal_gold.pos_manual_embeddings`"
+# All deployment-specific identifiers are resolved from the environment (see app/config.py).
+PROJECT_ID = config.PROJECT_ID
+EMBEDDING_ENDPOINT = config.EMBEDDING_ENDPOINT
+TABLE_NAME = config.bq_table_ref(config.POS_CHUNK_EMBEDDINGS_TABLE)
+BASELINE_TABLE_NAME = config.bq_table_ref(config.POS_BASELINE_EMBEDDINGS_TABLE)
 
-SIMILARITY_THRESHOLD = 0.70
+SIMILARITY_THRESHOLD = config.SIMILARITY_THRESHOLD
 
+# Mandatory grounding failure response returned whenever hybrid relevance fails to
+# clear SIMILARITY_THRESHOLD (0.70). This string is contractually fixed by the
+# system architecture design and must not be paraphrased.
 UNCERTIFIED_WARNING_FALLBACK = (
-    "[WARNING: Uncertified / Out-of-Scope Hardware Inquiry. Vector similarity "
-    "score fell below the safety threshold and no certified POS runbook matched "
-    "your query. Please consult authorized hardware vendor support.]"
+    "I cannot find certified warranty or repair rules for this specific error "
+    "in our technical repository."
 )
 
 
@@ -59,7 +60,7 @@ def _prepare_search_term(query: str) -> str:
     return query
 
 
-def _execute_query_with_retry(client: bigquery.Client, sql: str, params: List[bigquery.ScalarQueryParameter]) -> List[bigquery.Row]:
+def _execute_query_with_retry(client: bigquery.Client, sql: str, params: list[bigquery.ScalarQueryParameter]) -> list[bigquery.Row]:
     """Executes a BigQuery query with 3 exponential backoff retries."""
     max_retries = 3
     backoff_delay = 1.0  # seconds
@@ -92,10 +93,10 @@ def pos_troubleshooting_rag_tool(query: str) -> str:
         query: Hardware error code or troubleshooting question (e.g. 'ERR-PAY-4001 EMV freeze').
 
     Returns:
-        Top-5 certified recovery procedures with clickable manual links, or a warning disclaimer
-        if the hardware query falls below the relevance threshold.
+        Top-5 certified recovery procedures with clickable manual links, or the mandatory
+        grounding-failure decline message when relevance falls below the 0.70 threshold.
     """
-    client = bigquery.Client(project=PROJECT_ID)
+    client = bigquery.Client(project=config.require_env("PROJECT_ID", PROJECT_ID))
 
     # Step 1: Vector Search over pos_manual_chunk_embeddings with adjacent context stitching & SQL CASE error-code boost
     vector_search_sql = f"""
@@ -110,7 +111,7 @@ def pos_troubleshooting_rag_tool(query: str) -> str:
       FROM VECTOR_SEARCH(
         TABLE {TABLE_NAME},
         'embedding',
-        (SELECT AI.EMBED(@query, endpoint => 'text-embedding-005').result AS query_embedding),
+        (SELECT AI.EMBED(@query, endpoint => '{EMBEDDING_ENDPOINT}').result AS query_embedding),
         top_k => 10,
         distance_type => 'COSINE'
       )
@@ -216,7 +217,7 @@ def pos_troubleshooting_rag_tool(query: str) -> str:
         return UNCERTIFIED_WARNING_FALLBACK
 
     # Step 4: Format matched results with citations, hybrid scores, and clickable HTTPS links
-    formatted_sections: List[str] = []
+    formatted_sections: list[str] = []
     for i, row in enumerate(results, 1):
         doc_title = row.document_title or row.document_filename
         equipment = row.equipment_covered or "POS Hardware Terminal"
@@ -227,6 +228,7 @@ def pos_troubleshooting_rag_tool(query: str) -> str:
 
         section = (
             f"--- [MATCH #{i} | Hybrid Score: {hybrid_score:.4f} (Vector Score: {vector_score:.4f})] ---\n"
+            f"Retrieval Method: {match_type}\n"
             f"Manual: {doc_title} ({equipment})\n"
             f"Documentation Link: {https_url}\n"
             f"Stitched Procedure Context:\n"
@@ -235,3 +237,12 @@ def pos_troubleshooting_rag_tool(query: str) -> str:
         formatted_sections.append(section)
 
     return "\n\n".join(formatted_sections)
+
+
+__all__ = [
+    "BASELINE_TABLE_NAME",
+    "SIMILARITY_THRESHOLD",
+    "TABLE_NAME",
+    "UNCERTIFIED_WARNING_FALLBACK",
+    "pos_troubleshooting_rag_tool",
+]

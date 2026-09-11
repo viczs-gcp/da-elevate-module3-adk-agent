@@ -15,7 +15,6 @@
 """Unit tests for cymbal_analytics_tool, temporal guardrails, and stream response parsing."""
 
 from unittest.mock import MagicMock, patch
-import pytest
 
 from app.tools.analytics_tool import (
     CLARIFICATION_PROMPT,

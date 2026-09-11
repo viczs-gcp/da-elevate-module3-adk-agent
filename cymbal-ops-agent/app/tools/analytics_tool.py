@@ -5,28 +5,23 @@ natural language retail analytics inquiries across Gold operational datasets.
 """
 
 import logging
-import os
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import google.auth
 import google.auth.transport.requests
-from dotenv import load_dotenv
 from google.adk.tools.data_agent import data_agent_tool
 from google.adk.tools.data_agent.config import DataAgentToolConfig
 
-load_dotenv()
+from app import config
 
 logger = logging.getLogger(__name__)
 
-# Target published Data Agent resource name
-PROJECT_ID = os.getenv("PROJECT_ID", "vic-data-elevate")
-DATA_AGENT_ID = os.getenv("DATA_AGENT_ID", "agent_74a5ddb1-afde-4852-9c56-d05df3c3f9de")
-DATA_AGENT_NAME = os.getenv(
-    "DATA_AGENT_NAME",
-    f"projects/{PROJECT_ID}/locations/global/dataAgents/{DATA_AGENT_ID}",
-)
+# All deployment-specific identifiers are resolved from the environment (see app/config.py).
+PROJECT_ID = config.PROJECT_ID
+DATA_AGENT_ID = config.DATA_AGENT_ID
+DATA_AGENT_NAME = config.DATA_AGENT_NAME
 
 FALLBACK_MESSAGE = (
     "Store analytics data service is currently unreachable. "
@@ -69,7 +64,7 @@ TEMPORAL_PATTERNS = [
 ]
 
 
-def check_temporal_date_requirement(query: str) -> Optional[str]:
+def check_temporal_date_requirement(query: str) -> str | None:
     """Validates whether queries targeting partitioned datasets include a temporal boundary.
 
     Queries requesting metrics over partitioned transaction tables (e.g. Net Transaction Revenue,
@@ -97,7 +92,7 @@ def check_temporal_date_requirement(query: str) -> Optional[str]:
     return None
 
 
-def _format_stream_response(steps: List[Dict[str, Any]]) -> str:
+def _format_stream_response(steps: list[dict[str, Any]]) -> str:
     """Parses streaming response steps from BigQuery Data Agent.
 
     Extracts:
@@ -105,10 +100,10 @@ def _format_stream_response(steps: List[Dict[str, Any]]) -> str:
       - Tabular results (markdown formatted)
       - Final synthesized analytical response
     """
-    generated_sqls: List[str] = []
-    final_responses: List[str] = []
-    data_tables: List[str] = []
-    thoughts: List[str] = []
+    generated_sqls: list[str] = []
+    final_responses: list[str] = []
+    data_tables: list[str] = []
+    thoughts: list[str] = []
 
     for step in steps:
         if not isinstance(step, dict):
@@ -150,7 +145,7 @@ def _format_stream_response(steps: List[Dict[str, Any]]) -> str:
                     md_table += f"\n*{summary}*"
                 data_tables.append(md_table)
 
-    sections: List[str] = []
+    sections: list[str] = []
     if final_responses:
         sections.append("\n\n".join(final_responses))
 
@@ -205,7 +200,7 @@ def cymbal_analytics_tool(query: str) -> str:
             settings = DataAgentToolConfig()
 
             result = data_agent_tool.ask_data_agent(
-                data_agent_name=DATA_AGENT_NAME,
+                data_agent_name=config.require_env("DATA_AGENT_NAME", DATA_AGENT_NAME),
                 query=query,
                 credentials=creds,
                 settings=settings,
@@ -232,8 +227,8 @@ def cymbal_analytics_tool(query: str) -> str:
 
 
 __all__ = [
-    "cymbal_analytics_tool",
-    "check_temporal_date_requirement",
     "CLARIFICATION_PROMPT",
     "FALLBACK_MESSAGE",
+    "check_temporal_date_requirement",
+    "cymbal_analytics_tool",
 ]

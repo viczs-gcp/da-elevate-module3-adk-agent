@@ -14,8 +14,13 @@
 
 """Unit tests for Cymbal Operations Coordinator Agent configuration and safety guardrails."""
 
-import pytest
-from app.agent import MODEL, SYSTEM_INSTRUCTION, app, cymbal_operations_agent, root_agent
+from app.agent import (
+    MODEL,
+    SYSTEM_INSTRUCTION,
+    app,
+    cymbal_operations_agent,
+    root_agent,
+)
 
 
 def test_coordinator_agent_identity() -> None:
