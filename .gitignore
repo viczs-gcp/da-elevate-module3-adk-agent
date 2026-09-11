@@ -5,6 +5,7 @@
 /04-module3-*.md
 /basic-dataset.json
 /tools.yaml
+/brd.md
 
 # Virtual Environments and Caches
 .venv/
