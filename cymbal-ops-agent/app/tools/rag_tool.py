@@ -116,7 +116,7 @@ def pos_troubleshooting_rag_tool(query: str) -> str:
         distance_type => 'COSINE'
       )
     ),
-    scored AS (
+    stitched AS (
       SELECT
         m.document_filename,
         m.document_title,
@@ -124,26 +124,40 @@ def pos_troubleshooting_rag_tool(query: str) -> str:
         m.source_pdf_uri,
         m.chunk_index,
         m.similarity_score AS vector_score,
-        ROUND(
-          m.similarity_score +
-          CASE
-            -- SQL-level CASE check for error-code wildcards (e.g. ERR-PAY-4001, ERR-%, ERR-*)
-            WHEN REGEXP_CONTAINS(@query, r'(?i)ERR-[A-Za-z0-9_*%-]+')
-             AND (
-               REGEXP_CONTAINS(c.chunk_content, CONCAT(r'(?i)', REPLACE(REPLACE(REGEXP_EXTRACT(@query, r'(?i)(ERR-[A-Za-z0-9_*%-]+)'), '%', '.*'), '*', '.*')))
-               OR REGEXP_CONTAINS(m.document_title, CONCAT(r'(?i)', REPLACE(REPLACE(REGEXP_EXTRACT(@query, r'(?i)(ERR-[A-Za-z0-9_*%-]+)'), '%', '.*'), '*', '.*')))
-             )
-            THEN 0.25
-            ELSE 0.0
-          END,
-          4
-        ) AS hybrid_score,
         STRING_AGG(c.chunk_content, '\\n' ORDER BY c.chunk_index ASC) AS stitched_procedure
       FROM matched m
       JOIN {TABLE_NAME} c
         ON m.document_filename = c.document_filename
        AND c.chunk_index BETWEEN (m.chunk_index - 1) AND (m.chunk_index + 1)
       GROUP BY m.document_filename, m.document_title, m.equipment_covered, m.source_pdf_uri, m.chunk_index, m.similarity_score
+    ),
+    scored AS (
+      -- The error-code boost is applied AFTER stitching: referencing a chunk-level
+      -- column inside the aggregated SELECT above is rejected by BigQuery
+      -- ("neither grouped nor aggregated"), which silently broke this entire path.
+      SELECT
+        s.document_filename,
+        s.document_title,
+        s.equipment_covered,
+        s.source_pdf_uri,
+        s.chunk_index,
+        s.vector_score,
+        s.stitched_procedure,
+        ROUND(
+          s.vector_score +
+          CASE
+            -- SQL-level CASE check for error-code wildcards (e.g. ERR-PAY-4001, ERR-%, ERR-*)
+            WHEN REGEXP_CONTAINS(@query, r'(?i)ERR-[A-Za-z0-9_*%-]+')
+             AND (
+               REGEXP_CONTAINS(s.stitched_procedure, CONCAT(r'(?i)', REPLACE(REPLACE(REGEXP_EXTRACT(@query, r'(?i)(ERR-[A-Za-z0-9_*%-]+)'), '%', '.*'), '*', '.*')))
+               OR REGEXP_CONTAINS(s.document_title, CONCAT(r'(?i)', REPLACE(REPLACE(REGEXP_EXTRACT(@query, r'(?i)(ERR-[A-Za-z0-9_*%-]+)'), '%', '.*'), '*', '.*')))
+             )
+            THEN 0.25
+            ELSE 0.0
+          END,
+          4
+        ) AS hybrid_score
+      FROM stitched s
     )
     SELECT *
     FROM scored

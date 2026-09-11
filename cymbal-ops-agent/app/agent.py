@@ -15,9 +15,15 @@
 
 """Root coordinator agent definition for Cymbal Retail Operations."""
 
+import logging
+
 from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.models import Gemini
+from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.plugins.bigquery_agent_analytics_plugin import (
+    BigQueryAgentAnalyticsPlugin,
+)
 from google.genai import types
 
 from app import config
@@ -26,6 +32,8 @@ from app.tools import (
     cymbal_analytics_tool,
     pos_troubleshooting_rag_tool,
 )
+
+logger = logging.getLogger(__name__)
 
 MODEL = config.AGENT_MODEL
 
@@ -67,13 +75,54 @@ cymbal_operations_agent = Agent(
 # For backward compatibility with existing runners, tests, and FastAPI app
 root_agent = cymbal_operations_agent
 
+
+def build_telemetry_plugins() -> list[BasePlugin]:
+    """Builds the BigQuery Agent Analytics plugin list for the ADK ``App``.
+
+    Every LLM request/response, tool invocation, latency measurement, and error
+    raised at runtime is streamed asynchronously (BigQuery Write API) into
+    ``{PROJECT_ID}.{BQ_TELEMETRY_DATASET}.{BQ_TELEMETRY_TABLE}``.
+
+    Returns:
+        A single-element list holding the configured plugin, or an empty list
+        when telemetry is disabled or the project is not configured.
+    """
+    if not config.BQ_TELEMETRY_ENABLED:
+        logger.info("BQ_TELEMETRY_ENABLED is false; agent analytics disabled.")
+        return []
+    if not config.PROJECT_ID:
+        logger.warning(
+            "PROJECT_ID is not configured; skipping BigQueryAgentAnalyticsPlugin. "
+            "Set PROJECT_ID, BQ_TELEMETRY_DATASET, and REGION to enable telemetry."
+        )
+        return []
+
+    logger.info(
+        "Streaming agent telemetry to %s.%s.%s (%s).",
+        config.PROJECT_ID,
+        config.BQ_TELEMETRY_DATASET,
+        config.BQ_TELEMETRY_TABLE,
+        config.BQ_TELEMETRY_LOCATION,
+    )
+    return [
+        BigQueryAgentAnalyticsPlugin(
+            project_id=config.PROJECT_ID,
+            dataset_id=config.BQ_TELEMETRY_DATASET,
+            table_id=config.BQ_TELEMETRY_TABLE,
+            location=config.BQ_TELEMETRY_LOCATION,
+        )
+    ]
+
+
 app = App(
     root_agent=cymbal_operations_agent,
     name="app",
+    plugins=build_telemetry_plugins(),
 )
 
 __all__ = [
     "cymbal_operations_agent",
     "root_agent",
     "app",
+    "build_telemetry_plugins",
 ]

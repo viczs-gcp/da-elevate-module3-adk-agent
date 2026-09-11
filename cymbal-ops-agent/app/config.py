@@ -80,6 +80,37 @@ def require_env(name: str, value: str) -> str:
     return value
 
 
+_TRUTHY = frozenset({"1", "true", "t", "yes", "y", "on"})
+_FALSY = frozenset({"0", "false", "f", "no", "n", "off"})
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    """Resolves an environment variable as a boolean feature flag.
+
+    Args:
+        name: Environment variable name.
+        default: Value returned when the variable is unset, empty, or unparseable.
+
+    Returns:
+        The parsed boolean value.
+    """
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if value in _TRUTHY:
+        return True
+    if value in _FALSY:
+        return False
+    logger.warning(
+        "Environment variable %s has unparseable boolean value %r; using default %s.",
+        name,
+        raw,
+        default,
+    )
+    return default
+
+
 # --------------------------------------------------------------------------- #
 # Core GCP configuration
 # --------------------------------------------------------------------------- #
@@ -128,6 +159,18 @@ BIGTABLE_MCP_AUDIENCE: str = get_env(
 BIGTABLE_MCP_SERVICE_ACCOUNT: str = get_env("BIGTABLE_MCP_SERVICE_ACCOUNT")
 
 # --------------------------------------------------------------------------- #
+# BigQuery Agent Analytics telemetry (BigQueryAgentAnalyticsPlugin)
+# --------------------------------------------------------------------------- #
+BQ_TELEMETRY_DATASET: str = get_env("BQ_TELEMETRY_DATASET", "agent_telemetry")
+BQ_TELEMETRY_TABLE: str = get_env("BQ_TELEMETRY_TABLE", "events")
+# Telemetry must land in a concrete BigQuery region -- "global" (a valid Vertex AI
+# location) is not a valid BigQuery dataset location, so default to REGION.
+BQ_TELEMETRY_LOCATION: str = get_env("BQ_TELEMETRY_LOCATION", REGION)
+# Set BQ_TELEMETRY_ENABLED=FALSE to run without streaming telemetry (offline
+# tests, CI, or environments without BigQuery write access).
+BQ_TELEMETRY_ENABLED: bool = env_flag("BQ_TELEMETRY_ENABLED", True)
+
+# --------------------------------------------------------------------------- #
 # Model configuration
 # --------------------------------------------------------------------------- #
 AGENT_MODEL: str = get_env("AGENT_MODEL", "gemini-3.6-flash")
@@ -155,6 +198,10 @@ __all__ = [
     "BIGTABLE_MCP_SERVICE_ACCOUNT",
     "BIGTABLE_MCP_URL",
     "BQ_DATASET",
+    "BQ_TELEMETRY_DATASET",
+    "BQ_TELEMETRY_ENABLED",
+    "BQ_TELEMETRY_LOCATION",
+    "BQ_TELEMETRY_TABLE",
     "DATA_AGENT_ID",
     "DATA_AGENT_LOCATION",
     "DATA_AGENT_NAME",
@@ -166,6 +213,7 @@ __all__ = [
     "REGION",
     "SIMILARITY_THRESHOLD",
     "bq_table_ref",
+    "env_flag",
     "get_env",
     "require_env",
 ]
