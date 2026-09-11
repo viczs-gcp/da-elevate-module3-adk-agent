@@ -25,10 +25,9 @@ BASELINE_TABLE_NAME = f"`{PROJECT_ID}.cymbal_gold.pos_manual_embeddings`"
 SIMILARITY_THRESHOLD = 0.70
 
 UNCERTIFIED_WARNING_FALLBACK = (
-    "Warning: The inquiry does not match any certified POS hardware terminal "
-    "documentation (relevance score < 0.70). Only queries regarding supported POS terminals "
-    "(Toshiba TCx 810, Clover Station Solo, HP Engage One Pro, NCR Voyix RealPOS XR7, "
-    "Diebold Nixdorf BEETLE A1150) can be resolved."
+    "[WARNING: Uncertified / Out-of-Scope Hardware Inquiry. Vector similarity "
+    "score fell below the safety threshold and no certified POS runbook matched "
+    "your query. Please consult authorized hardware vendor support.]"
 )
 
 
@@ -83,22 +82,22 @@ def _execute_query_with_retry(client: bigquery.Client, sql: str, params: List[bi
 
 
 def pos_troubleshooting_rag_tool(query: str) -> str:
-    """Searches official POS terminal service manuals and hardware diagnostics runbooks.
+    """Performs hybrid search (vector similarity + exact error code boost) over POS hardware manuals in BigQuery.
 
-    Performs vector similarity search and full-text keyword retrieval over fine-grained
-    troubleshooting procedures with adjacent context window stitching for Toshiba TCx 810,
-    Clover Station Solo, HP Engage One Pro, NCR Voyix RealPOS XR7, and Diebold Nixdorf BEETLE A1150.
+    Applies fine-grained 500-character sliding window chunks from pos_manual_chunk_embeddings,
+    stitches adjacent chunks (N-1 to N+1), boosts exact error code matches (+0.25), enforces a
+    0.70 similarity threshold, and returns the Top-5 certified procedures with clickable HTTPS links.
 
     Args:
-        query: Hardware fault description, error code (e.g. 'ERR-PAY-4001'), or operational procedure.
+        query: Hardware error code or troubleshooting question (e.g. 'ERR-PAY-4001 EMV freeze').
 
     Returns:
-        A certified troubleshooting procedure with source manual citation and hardware details,
-        or a safety warning if the inquiry is out-of-scope.
+        Top-5 certified recovery procedures with clickable manual links, or a warning disclaimer
+        if the hardware query falls below the relevance threshold.
     """
     client = bigquery.Client(project=PROJECT_ID)
 
-    # Step 1: Vector Search over pos_manual_chunk_embeddings with adjacent context stitching
+    # Step 1: Vector Search over pos_manual_chunk_embeddings with adjacent context stitching & SQL CASE error-code boost
     vector_search_sql = f"""
     WITH matched AS (
       SELECT
@@ -112,26 +111,44 @@ def pos_troubleshooting_rag_tool(query: str) -> str:
         TABLE {TABLE_NAME},
         'embedding',
         (SELECT AI.EMBED(@query, endpoint => 'text-embedding-005').result AS query_embedding),
-        top_k => 3,
+        top_k => 10,
         distance_type => 'COSINE'
       )
+    ),
+    scored AS (
+      SELECT
+        m.document_filename,
+        m.document_title,
+        m.equipment_covered,
+        m.source_pdf_uri,
+        m.chunk_index,
+        m.similarity_score AS vector_score,
+        ROUND(
+          m.similarity_score +
+          CASE
+            -- SQL-level CASE check for error-code wildcards (e.g. ERR-PAY-4001, ERR-%, ERR-*)
+            WHEN REGEXP_CONTAINS(@query, r'(?i)ERR-[A-Za-z0-9_*%-]+')
+             AND (
+               REGEXP_CONTAINS(c.chunk_content, CONCAT(r'(?i)', REPLACE(REPLACE(REGEXP_EXTRACT(@query, r'(?i)(ERR-[A-Za-z0-9_*%-]+)'), '%', '.*'), '*', '.*')))
+               OR REGEXP_CONTAINS(m.document_title, CONCAT(r'(?i)', REPLACE(REPLACE(REGEXP_EXTRACT(@query, r'(?i)(ERR-[A-Za-z0-9_*%-]+)'), '%', '.*'), '*', '.*')))
+             )
+            THEN 0.25
+            ELSE 0.0
+          END,
+          4
+        ) AS hybrid_score,
+        STRING_AGG(c.chunk_content, '\\n' ORDER BY c.chunk_index ASC) AS stitched_procedure
+      FROM matched m
+      JOIN {TABLE_NAME} c
+        ON m.document_filename = c.document_filename
+       AND c.chunk_index BETWEEN (m.chunk_index - 1) AND (m.chunk_index + 1)
+      GROUP BY m.document_filename, m.document_title, m.equipment_covered, m.source_pdf_uri, m.chunk_index, m.similarity_score
     )
-    SELECT
-      m.document_filename,
-      m.document_title,
-      m.equipment_covered,
-      m.source_pdf_uri,
-      m.chunk_index,
-      m.similarity_score,
-      STRING_AGG(c.chunk_content, '\\n' ORDER BY c.chunk_index ASC) AS stitched_procedure
-    FROM matched m
-    JOIN {TABLE_NAME} c
-      ON m.document_filename = c.document_filename
-     AND c.chunk_index BETWEEN (m.chunk_index - 1) AND (m.chunk_index + 1)
-    WHERE m.similarity_score >= {SIMILARITY_THRESHOLD}
-    GROUP BY m.document_filename, m.document_title, m.equipment_covered, m.source_pdf_uri, m.chunk_index, m.similarity_score
-    ORDER BY m.similarity_score DESC
-    LIMIT 4
+    SELECT *
+    FROM scored
+    WHERE hybrid_score >= {SIMILARITY_THRESHOLD}
+    ORDER BY hybrid_score DESC
+    LIMIT 5
     """
 
     try:
@@ -140,7 +157,7 @@ def pos_troubleshooting_rag_tool(query: str) -> str:
             vector_search_sql,
             [bigquery.ScalarQueryParameter("query", "STRING", query)],
         )
-        match_type = "Vector Similarity Search"
+        match_type = "Hybrid Vector Search"
     except Exception as exc:
         logger.error("Vector search failed: %s", exc)
         results = []
@@ -163,7 +180,7 @@ def pos_troubleshooting_rag_tool(query: str) -> str:
           FROM {TABLE_NAME}
           WHERE SEARCH(chunk_content, @search_term)
           ORDER BY chunk_index
-          LIMIT 4
+          LIMIT 5
         )
         SELECT
           m.document_filename,
@@ -171,7 +188,8 @@ def pos_troubleshooting_rag_tool(query: str) -> str:
           m.equipment_covered,
           m.source_pdf_uri,
           m.chunk_index,
-          m.similarity_score,
+          m.similarity_score AS vector_score,
+          m.similarity_score AS hybrid_score,
           STRING_AGG(c.chunk_content, '\\n' ORDER BY c.chunk_index ASC) AS stitched_procedure
         FROM matched m
         JOIN {TABLE_NAME} c
@@ -179,7 +197,7 @@ def pos_troubleshooting_rag_tool(query: str) -> str:
          AND c.chunk_index BETWEEN (m.chunk_index - 1) AND (m.chunk_index + 1)
         GROUP BY m.document_filename, m.document_title, m.equipment_covered, m.source_pdf_uri, m.chunk_index, m.similarity_score
         ORDER BY m.chunk_index ASC
-        LIMIT 4
+        LIMIT 5
         """
 
         try:
@@ -197,25 +215,23 @@ def pos_troubleshooting_rag_tool(query: str) -> str:
     if not results:
         return UNCERTIFIED_WARNING_FALLBACK
 
-    # Step 4: Format matched results with citations and clickable HTTPS links
+    # Step 4: Format matched results with citations, hybrid scores, and clickable HTTPS links
     formatted_sections: List[str] = []
-    for row in results:
+    for i, row in enumerate(results, 1):
         doc_title = row.document_title or row.document_filename
         equipment = row.equipment_covered or "POS Hardware Terminal"
         https_url = _gcs_to_https(row.source_pdf_uri)
-        score = row.similarity_score
+        hybrid_score = getattr(row, "hybrid_score", getattr(row, "similarity_score", 0.0))
+        vector_score = getattr(row, "vector_score", getattr(row, "similarity_score", 0.0))
         procedure = row.stitched_procedure
 
-        citation = f"[{doc_title}]({https_url})" if https_url else doc_title
-
         section = (
-            f"### Certified POS Hardware Runbook: {equipment}\n\n"
-            f"- **Source Manual:** {citation}\n"
-            f"- **Retrieval Method:** {match_type} (Confidence Score: {score:.4f})\n"
-            f"- **Chunk Context:** Window [{row.chunk_index - 1} - {row.chunk_index + 1}]\n\n"
-            f"#### Troubleshooting Procedure & Field Protocol:\n\n"
+            f"--- [MATCH #{i} | Hybrid Score: {hybrid_score:.4f} (Vector Score: {vector_score:.4f})] ---\n"
+            f"Manual: {doc_title} ({equipment})\n"
+            f"Documentation Link: {https_url}\n"
+            f"Stitched Procedure Context:\n"
             f"{procedure}\n"
         )
         formatted_sections.append(section)
 
-    return "\n---\n".join(formatted_sections)
+    return "\n\n".join(formatted_sections)

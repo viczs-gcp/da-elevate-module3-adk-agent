@@ -6,6 +6,7 @@ natural language retail analytics inquiries across Gold operational datasets.
 
 import logging
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -31,6 +32,69 @@ FALLBACK_MESSAGE = (
     "Store analytics data service is currently unreachable. "
     "Please verify database connectivity or try again later."
 )
+
+CLARIFICATION_PROMPT = (
+    "[CLARIFICATION REQUIRED] Please specify a target date range or timeframe "
+    "(e.g., 'today', '2026-09-01 to 2026-09-07', or 'last 7 days') before "
+    "querying partitioned transaction datasets."
+)
+
+PARTITIONED_KEYWORDS = [
+    r"\bnet\s+transaction\s+revenue\b",
+    r"\bpos_transactions(?:_gold)?\b",
+    r"\bsilver_pos_transactions\b",
+    r"\bcheckout\s+logs\b",
+    r"\bpromo\s+abuse\b",
+    r"\btransaction(?:s)?\b",
+    r"\bcheckout(?:s)?\b",
+    r"\bcashier\s+(?:promo\s+)?override\b",
+]
+
+TEMPORAL_PATTERNS = [
+    r"\b\d{4}-\d{2}-\d{2}\b",                      # 2026-09-11
+    r"\b\d{4}/\d{2}/\d{2}\b",                      # 2026/09/11
+    r"\b\d{1,2}/\d{1,2}/\d{2,4}\b",                # 09/11/2026
+    r"\b202[0-9]\b",                               # 2026
+    r"\b(?:today|yesterday|tomorrow)\b",           # today
+    r"\b(?:last|past|next|this)\s+(?:\d+\s+)?(?:day|days|week|weeks|month|months|quarter|year|years|hour|hours)\b",
+    r"\b(?:daily|weekly|monthly|quarterly|hourly)\b",
+    r"\b\d+-day\b",                                # 7-day
+    r"\brolling\b",
+    r"\b(?:since|between|from|to|until|during)\b",
+    r"\b(?:q[1-4]|ytd|mtd|wtd)\b",
+    r"\bTXN-\d{8}-\d+\b",                          # TXN-20260312-0015811
+    r"\bbaseline\b",                               # baseline comparison
+    r"\brecent\b",
+    r"\blatest\b",
+]
+
+
+def check_temporal_date_requirement(query: str) -> Optional[str]:
+    """Validates whether queries targeting partitioned datasets include a temporal boundary.
+
+    Queries requesting metrics over partitioned transaction tables (e.g. Net Transaction Revenue,
+    sales, orders, POS transactions, checkout logs) must specify a date range or timeframe
+    to avoid unpartitioned full-table scans.
+
+    Returns:
+        CLARIFICATION_PROMPT if the query targets partitioned datasets without a temporal date,
+        or None if the query is compliant.
+    """
+    query_lower = query.lower()
+
+    targets_partitioned = any(
+        re.search(pat, query_lower) for pat in PARTITIONED_KEYWORDS
+    )
+    if not targets_partitioned:
+        return None
+
+    has_temporal_boundary = any(
+        re.search(pat, query_lower, re.IGNORECASE) for pat in TEMPORAL_PATTERNS
+    )
+    if not has_temporal_boundary:
+        return CLARIFICATION_PROMPT
+
+    return None
 
 
 def _format_stream_response(steps: List[Dict[str, Any]]) -> str:
@@ -123,6 +187,12 @@ def cymbal_analytics_tool(query: str) -> str:
         A formatted markdown string containing the conversational response, generated GoogleSQL,
         and underlying data retrieved from BigQuery.
     """
+    # Guardrail: Check for temporal date requirement on partitioned datasets
+    clarification = check_temporal_date_requirement(query)
+    if clarification:
+        logger.info("Query requires temporal clarification before querying partitioned datasets: %s", query)
+        return clarification
+
     max_retries = 3
     backoff_delay = 1.0  # seconds (exponential: 1s, 2s, 4s)
 
@@ -159,3 +229,11 @@ def cymbal_analytics_tool(query: str) -> str:
         time.sleep(backoff_delay * (2 ** (attempt - 1)))
 
     return FALLBACK_MESSAGE
+
+
+__all__ = [
+    "cymbal_analytics_tool",
+    "check_temporal_date_requirement",
+    "CLARIFICATION_PROMPT",
+    "FALLBACK_MESSAGE",
+]
