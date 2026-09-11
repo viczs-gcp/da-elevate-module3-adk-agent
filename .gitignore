@@ -1,0 +1,24 @@
+# Lab instructions and extraneous files
+/01-module3-*.md
+/02-module3-*.md
+/03-module3-*.md
+/04-module3-*.md
+/basic-dataset.json
+/tools.yaml
+
+# Virtual Environments and Caches
+.venv/
+.venv*
+__pycache__/
+*.py[cod]
+.adk/
+.pytest_cache/
+.DS_Store
+
+# Environment variables & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*-key.json
+credentials*.json
